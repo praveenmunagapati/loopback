@@ -165,9 +165,15 @@ module.exports = function(User) {
    *
    * ```js
    *    User.login({username: 'foo', password: 'bar'}, function (err, token) {
-  *      console.log(token.id);
-  *    });
+   *      console.log(token.id);
+   *    });
    * ```
+   *
+   * If the `emailVerificationRequired` flag is set for the inherited user model
+   * and the email has not yet been verified then the method will return a 401
+   * error that will contain the user's id. This id can be used to call the
+   * `api/verify` remote method to generate a new email verification token and
+   * send back the related email to the user.
    *
    * @param {Object} credentials username/password or email/password
    * @param {String[]|String} [include] Optionally set it to "user" to include
@@ -255,6 +261,7 @@ module.exports = function(User) {
               err = new Error(g.f('login failed as the email has not been verified'));
               err.statusCode = 401;
               err.code = 'LOGIN_FAILED_EMAIL_NOT_VERIFIED';
+              err.userId = user.id;
               fn(err);
             } else {
               if (user.createAccessToken.length === 2) {
@@ -434,42 +441,60 @@ module.exports = function(User) {
   };
 
   /**
-   * Default verification options to use when calling User.verify()
+   * Returns default verification options to use when calling User.verify()
+   * without the `verifyOptions` param. This is specifically useful when calling
+   * this method remotely over rest.
+   *
    * This is the full list of possible params, with example values
    *
    * ```js
-   * var options = {
-   *      type: 'email',
-   *      mailer: anEmailModel,
-   *      to: 'test@email.com',
-   *      from: 'noreply@email.com'
-   *      subject: 'verification email subject',
-   *      text: 'verification email text',
-   *      headers: {'Mime-Version': '1.0'},
-   *      template: 'path/to/template.ejs',
-   *      redirect: '/',
-   *      verifyHref: '',
-   *      host: 'localhost'
-   *      protocol: 'http'
-   *      port: 3000,
-   *      restApiRoot= '/api',
-   *      tokenGenerator: function (user, cb) { cb("random-token"); }
-   *    };
-   *```
+   * {
+   *   type: 'email',
+   *   mailer: anEmailModel,
+   *   to: 'test@email.com',
+   *   from: 'noreply@email.com'
+   *   subject: 'verification email subject',
+   *   text: 'verification email text',
+   *   headers: {'Mime-Version': '1.0'},
+   *   template: 'path/to/template.ejs',
+   *   redirect: '/',
+   *   verifyHref: '',
+   *   host: 'localhost'
+   *   protocol: 'http'
+   *   port: 3000,
+   *   restApiRoot= '/api',
+   *   tokenGenerator: function (user, cb) { cb("random-token"); }
+   * }
+   * ```
+   *
+   * The default options can be modified in your custom user model json definition
+   * using `settings.verifyOptions` or programmatically like follows:
+   *
+   * ```js
+   * customUserModel.getVerifyOptions = function() {
+   *   const base = MyUser.base.getVerifyOptions();
+   *   return Object.assign({}, base, {
+   *     // custom values
+   *   });
+   * }
+   * ```
+   *
+   * The former approach will not allow you to provide a custom `tokenGenerator`
+   * function, but the latter will.
    *
    * Usually you should only require to modify a subset of these params
    * See `User.verify()` and `User.prototype.verify()` doc for params reference
    */
 
-  User.verifyOptions = {
-    type: 'email',
+  User.getVerifyOptions = function() {
+    return this.settings.verifyOptions || {type: 'email'};
   };
 
   /**
    * Verify a user's identity by sending them a confirmation email.
    *
    * ```js
-   *    var options = {
+   *    var verifyOptions = {
    *      type: 'email',
    *      to: user.email,
    *      template: 'verify.ejs',
@@ -481,7 +506,8 @@ module.exports = function(User) {
    *    user.verify(options, next);
    * ```
    *
-   * @options {Object} options
+   * @param {*} id The user id
+   * @options {Object} verifyOptions
    * @property {String} type Must be 'email'.
    * @property {String} to Email address to which verification email is sent.
    * @property {String} from Sender email addresss, for example
@@ -507,37 +533,31 @@ module.exports = function(User) {
    * @promise
    */
 
-  User.verify = function(email, verifyOptions, options, cb) {
-    verifyOptions = verifyOptions || User.verifyOptions;
+  User.verify = function(uid, verifyOptions, options, cb) {
     if (cb === undefined && typeof options === 'function') {
       cb = options;
       options = undefined;
     }
     cb = cb || utils.createPromiseCallback();
+    if (options === undefined) {
+      options = verifyOptions;
+      verifyOptions = undefined;
+    }
+    verifyOptions = verifyOptions || this.getVerifyOptions();
 
     // Make sure to use the constructor of the (sub)class
     // where the method is invoked from (`this` instead of `User`)
-    this.find({where: {email}}, options, (err, users) => {
+    this.findById(uid, options, (err, user) => {
       if (err) return cb(err);
 
-      if (users.length === 0) {
-        const err = new Error(`User ${email} not found`);
+      if (!user) {
+        const err = new Error(`User ${uid} not found`);
         Object.assign(err, {
           code: 'USER_NOT_FOUND',
           statusCode: 422, // or 404?
         });
         return cb(err);
       }
-      if (users.length > 1) {
-        const err = new Error(`Multiple users found for email ${email}`);
-        Object.assign(err, {
-          code: 'MULTIPLE_USERS_FOUND',
-          statusCode: 422,
-        });
-        return cb(err);
-      }
-
-      const user = users[0];
       user.verify(verifyOptions, cb);
     });
 
@@ -586,14 +606,16 @@ module.exports = function(User) {
    */
 
   User.prototype.verify = function(options, fn) {
-    options = options || User.verifyOptions;
+    options = options || this.getVerifyOptions();
     fn = fn || utils.createPromiseCallback();
 
     var user = this;
     var userModel = this.constructor;
     var registry = userModel.registry;
     var pkName = userModel.definition.idName() || 'id';
-    assert(typeof options === 'object', 'options required when calling user.verify()');
+    assert(typeof options === 'object', 'verifyOptions are required when calling ' +
+      'user.verify(), please verify the implementation of your user model\'s ' +
+      'getVerifyOptions() method');
     assert(options.type, 'You must supply a verification type (options.type)');
     assert(options.type === 'email', 'Unsupported verification type');
     assert(options.to || this.email,
@@ -983,9 +1005,9 @@ module.exports = function(User) {
     UserModel.remoteMethod(
       'verify',
       {
-        description: 'Trigger user\'s email verification.',
+        description: 'Trigger user\'s identity verification.',
         accepts: [
-          {arg: 'email', type: 'string', required: true, http: {source: 'form'}},
+          {arg: 'uid', type: 'string', required: true, http: {source: 'form'}},
           {arg: 'options', type: 'object', http: 'optionsFromRequest'},
         ],
         http: {verb: 'post', path: '/verify'},
@@ -995,7 +1017,7 @@ module.exports = function(User) {
     UserModel.remoteMethod(
       'confirm',
       {
-        description: 'Confirm a user registration with email verification token.',
+        description: 'Confirm a user registration with identity verification token.',
         accepts: [
           {arg: 'uid', type: 'string', required: true},
           {arg: 'token', type: 'string', required: true},

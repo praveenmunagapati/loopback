@@ -833,7 +833,7 @@ describe('User', function() {
       User.settings.emailVerificationRequired = false;
     });
 
-    it('Require valid and complete credentials for email verification error', function(done) {
+    it('require valid and complete credentials for email verification', function(done) {
       User.login({email: validCredentialsEmail}, function(err, accessToken) {
         // strongloop/loopback#931
         // error message should be "login failed"
@@ -841,12 +841,15 @@ describe('User', function() {
         assert(err && !/verified/.test(err.message),
           'expecting "login failed" error message, received: "' + err.message + '"');
         assert.equal(err.code, 'LOGIN_FAILED');
+        // as login is failing because of invalid credentials it should to return
+        // the user id in the error message
+        assert.equal(err.userId, undefined);
 
         done();
       });
     });
 
-    it('Require valid and complete credentials for email verification error - promise variant',
+    it('require valid and complete credentials for email verification - promise variant',
     function(done) {
       User.login({email: validCredentialsEmail})
         .then(function(accessToken) {
@@ -858,21 +861,21 @@ describe('User', function() {
         assert(err && !/verified/.test(err.message),
           'expecting "login failed" error message, received: "' + err.message + '"');
         assert.equal(err.code, 'LOGIN_FAILED');
-
+        assert.equal(err.userId, undefined);
         done();
       });
     });
 
-    it('Login a user by without email verification', function(done) {
+    it('does not login a user with unverified email but provides userId', function(done) {
       User.login(validCredentials, function(err, accessToken) {
         assert(err);
         assert.equal(err.code, 'LOGIN_FAILED_EMAIL_NOT_VERIFIED');
-
+        assert.equal(err.userId, validCredentialsUser.pk);
         done();
       });
     });
 
-    it('Login a user by without email verification - promise variant', function(done) {
+    it('does not login a user with unverified email - promise variant', function(done) {
       User.login(validCredentials)
         .then(function(err, accessToken) {
           done();
@@ -880,12 +883,12 @@ describe('User', function() {
         .catch(function(err) {
           assert(err);
           assert.equal(err.code, 'LOGIN_FAILED_EMAIL_NOT_VERIFIED');
-
+          assert.equal(err.userId, validCredentialsUser.pk);
           done();
         });
     });
 
-    it('Login a user by with email verification', function(done) {
+    it('login a user with verified email', function(done) {
       User.login(validCredentialsEmailVerified, function(err, accessToken) {
         assertGoodToken(accessToken, validCredentialsEmailVerifiedUser);
 
@@ -893,7 +896,7 @@ describe('User', function() {
       });
     });
 
-    it('Login a user by with email verification - promise variant', function(done) {
+    it('login a user with verified email - promise variant', function(done) {
       User.login(validCredentialsEmailVerified)
         .then(function(accessToken) {
           assertGoodToken(accessToken, validCredentialsEmailVerifiedUser);
@@ -905,7 +908,7 @@ describe('User', function() {
         });
     });
 
-    it('Login a user over REST when email verification is required', function(done) {
+    it('login a user over REST when email verification is required', function(done) {
       request(app)
         .post('/test-users/login')
         .expect('Content-Type', /json/)
@@ -923,7 +926,7 @@ describe('User', function() {
         });
     });
 
-    it('Login user over REST require complete and valid credentials ' +
+    it('login user over REST require complete and valid credentials ' +
     'for email verification error message',
     function(done) {
       request(app)
@@ -946,7 +949,7 @@ describe('User', function() {
         });
     });
 
-    it('Login a user over REST without email verification when it is required', function(done) {
+    it('login a user over REST without email verification when it is required', function(done) {
       request(app)
         .post('/test-users/login')
         .expect('Content-Type', /json/)
@@ -1405,6 +1408,31 @@ describe('User', function() {
   });
 
   describe('Verification', function() {
+    describe('User.getVerifyOptions()', function() {
+      it('returns default user identity verify options', function(done) {
+        const verifyOptions = User.getVerifyOptions();
+        expect(verifyOptions).to.eql({
+          'type': 'email',
+        });
+        done();
+      });
+
+      it('can be extended by user', function(done) {
+        User.getVerifyOptions = function() {
+          const base = User.base.getVerifyOptions();
+          return Object.assign({}, base, {
+            from: 'noreply@email.com',
+          });
+        };
+        const verifyOptions = User.getVerifyOptions();
+        expect(verifyOptions).to.eql({
+          type: 'email',
+          from: 'noreply@email.com',
+        });
+        done();
+      });
+    });
+
     describe('user.verify(options, fn)', function() {
       it('Verify a user\'s email address', function(done) {
         User.afterRemote('create', function(ctx, user, next) {
@@ -1918,6 +1946,75 @@ describe('User', function() {
           .then(token => {
             expect(token).to.exist();
           });
+      });
+    });
+
+    describe('User.verify(id)', function() {
+      beforeEach(()=> {
+        User.getVerifyOptions = function() {
+          const base = User.base.getVerifyOptions();
+          return Object.assign({}, base, {
+            from: 'noreply@email.com',
+          });
+        };
+      });
+
+      it('triggers user identity verification', function() {
+        return User.create({email: 'bar@bat.com', password: 'bar'})
+        .then(user => {
+          return User.verify(user.pk);
+        })
+        .then(res => {
+          // No need to redo all the tests already done in the User.prototype.verify()
+          // prototype method: just doing a partial check to confirm that the
+          // prototype method was called successfully.
+          expect(res.email.envelope).to.eql({from: 'noreply@email.com', to: ['bar@bat.com']});
+        });
+      });
+
+      it('throws when providing an invalid user id', function() {
+        return User.create({email: 'bar@bat.com', password: 'bar'})
+        .then(user => {
+          return User.verify('invalidUserId');
+        })
+        .then(
+          function onSuccess() {
+            throw new Error('User.verify() should have failed');
+          },
+          function onError(err) {
+            err = Object.assign({}, err);
+            expect(err).to.eql({
+              code: 'USER_NOT_FOUND',
+              statusCode: 422,
+            });
+          }
+        );
+      });
+
+      it('is called over REST method /User/verify', function() {
+        return request(app)
+          .post('/test-users')
+          .send({email: 'bar@bat.com', password: 'bar'})
+          .expect('Content-Type', /json/)
+          .expect(200)
+          .then(res => {
+            return request(app)
+              .post('/test-users/verify')
+              .send({uid: res.body.pk})
+              .expect('Content-Type', /json/)
+              // we already tested before that User.verify(id) works correctly
+              // having the remote method returning 204 is enough to make sure
+              // User.verify() was called successfully
+              .expect(204);
+          });
+      });
+
+      it('fails over REST with invalid user id', function() {
+        return request(app)
+          .post('/test-users/verify')
+          .send({uid: 'invalidUserId'})
+          .expect('Content-Type', /json/)
+          .expect(422);
       });
     });
 
