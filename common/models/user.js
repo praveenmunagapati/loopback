@@ -261,7 +261,9 @@ module.exports = function(User) {
               err = new Error(g.f('login failed as the email has not been verified'));
               err.statusCode = 401;
               err.code = 'LOGIN_FAILED_EMAIL_NOT_VERIFIED';
-              err.userId = user.id;
+              err.details = {
+                userId: user.id,
+              };
               fn(err);
             } else {
               if (user.createAccessToken.length === 2) {
@@ -487,7 +489,11 @@ module.exports = function(User) {
    */
 
   User.getVerifyOptions = function() {
-    return this.settings.verifyOptions || {type: 'email'};
+    const verifyOptions = {
+      type: 'email',
+      from: 'noreply@example.com',
+    };
+    return this.settings.verifyOptions || verifyOptions;
   };
 
   /**
@@ -496,14 +502,23 @@ module.exports = function(User) {
    * ```js
    *    var verifyOptions = {
    *      type: 'email',
-   *      to: user.email,
+   *      from: noreply@example.com,
    *      template: 'verify.ejs',
    *      templateFn: function(options, cb) { cb(...) }
    *      redirect: '/',
    *      tokenGenerator: function (user, cb) { cb(...); }
    *    };
    *
-   *    user.verify(options, next);
+   *    user.verify(verifyOptions);
+   * ```
+   *
+   * NOTE: the User.getVerifyOptions() method can also be used to ease the
+   * building of identity verification options. This method can be customized
+   * with the `verifyOptions` option in user model's JSON definition file.
+   * See the method's documentation for more information.
+   *
+   * ```js
+   *    var verifyOptions = MyUser.getVerifyOptions();
    * ```
    *
    * @param {*} id The user id
@@ -528,6 +543,7 @@ module.exports = function(User) {
    *  object, instead simply execute the callback with the token! User saving
    *  and email sending will be handled in the `verify()` method.
    * @callback {Function} fn Callback function.
+   * @param {Object} options remote context options.
    * @param {Error} err Error object.
    * @param {Object} object Contains email, token, uid.
    * @promise
@@ -539,11 +555,6 @@ module.exports = function(User) {
       options = undefined;
     }
     cb = cb || utils.createPromiseCallback();
-    if (options === undefined) {
-      options = verifyOptions;
-      verifyOptions = undefined;
-    }
-    verifyOptions = verifyOptions || this.getVerifyOptions();
 
     // Make sure to use the constructor of the (sub)class
     // where the method is invoked from (`this` instead of `User`)
@@ -554,11 +565,11 @@ module.exports = function(User) {
         const err = new Error(`User ${uid} not found`);
         Object.assign(err, {
           code: 'USER_NOT_FOUND',
-          statusCode: 422, // or 404?
+          statusCode: 404,
         });
         return cb(err);
       }
-      user.verify(verifyOptions, cb);
+      user.verify(verifyOptions, options, cb);
     });
 
     return cb.promise;
@@ -568,18 +579,27 @@ module.exports = function(User) {
    * Verify a user's identity by sending them a confirmation email.
    *
    * ```js
-   *    var options = {
+   *    var verifyOptions = {
    *      type: 'email',
-   *      to: user.email,
+   *      from: 'noreply@example.com'
    *      template: 'verify.ejs',
    *      redirect: '/',
-   *      tokenGenerator: function (user, cb) { cb("random-token"); }
+   *      tokenGenerator: function (user, options, cb) { cb("random-token"); }
    *    };
    *
-   *    user.verify(options, next);
+   *    user.verify(verifyOptions);
    * ```
    *
-   * @options {Object} options
+   * NOTE: the User.getVerifyOptions() method can also be used to ease the
+   * building of identity verification options. This method can be customized
+   * with the `verifyOptions` option in user model's JSON definition file.
+   * See the method's documentation for more information.
+   *
+   * ```js
+   *    var verifyOptions = MyUser.getVerifyOptions();
+   * ```
+   *
+   * @options {Object} verifyOptions
    * @property {String} type Must be 'email'.
    * @property {String} to Email address to which verification email is sent.
    * @property {String} from Sender email addresss, for example
@@ -599,80 +619,85 @@ module.exports = function(User) {
    *  callback function. This function should NOT add the token to the user
    *  object, instead simply execute the callback with the token! User saving
    *  and email sending will be handled in the `verify()` method.
-   * @callback {Function} fn Callback function.
+   * @callback {Function} cb Callback function.
+   * @param {Object} options remote context options.
    * @param {Error} err Error object.
    * @param {Object} object Contains email, token, uid.
    * @promise
    */
 
-  User.prototype.verify = function(options, fn) {
-    options = options || this.getVerifyOptions();
-    fn = fn || utils.createPromiseCallback();
+  User.prototype.verify = function(verifyOptions, options, cb) {
+    if (cb === undefined && typeof options === 'function') {
+      cb = options;
+      options = undefined;
+    }
+    cb = cb || utils.createPromiseCallback();
 
     var user = this;
     var userModel = this.constructor;
     var registry = userModel.registry;
     var pkName = userModel.definition.idName() || 'id';
-    assert(typeof options === 'object', 'verifyOptions are required when calling ' +
+
+    assert(typeof verifyOptions === 'object', 'verifyOptions are required when calling ' +
       'user.verify(), please verify the implementation of your user model\'s ' +
       'getVerifyOptions() method');
-    assert(options.type, 'You must supply a verification type (options.type)');
-    assert(options.type === 'email', 'Unsupported verification type');
-    assert(options.to || this.email,
-      'Must include options.to when calling user.verify() ' +
+    assert(verifyOptions.type, 'You must supply a verification type (verifyOptions.type)');
+    assert(verifyOptions.type === 'email', 'Unsupported verification type');
+    assert(verifyOptions.to || this.email,
+      'Must include verifyOptions.to when calling user.verify() ' +
       'or the user must have an email property');
-    assert(options.from, 'Must include options.from when calling user.verify()');
+    assert(verifyOptions.from, 'Must include verifyOptions.from when calling user.verify()');
 
-    options.redirect = options.redirect || '/';
+    verifyOptions.redirect = verifyOptions.redirect || '/';
     var defaultTemplate = path.join(__dirname, '..', '..', 'templates', 'verify.ejs');
-    options.template = path.resolve(options.template || defaultTemplate);
-    options.user = this;
-    options.protocol = options.protocol || 'http';
+    verifyOptions.template = path.resolve(verifyOptions.template || defaultTemplate);
+    verifyOptions.user = this;
+    verifyOptions.protocol = verifyOptions.protocol || 'http';
 
     var app = userModel.app;
-    options.host = options.host || (app && app.get('host')) || 'localhost';
-    options.port = options.port || (app && app.get('port')) || 3000;
-    options.restApiRoot = options.restApiRoot || (app && app.get('restApiRoot')) || '/api';
+    verifyOptions.host = verifyOptions.host || (app && app.get('host')) || 'localhost';
+    verifyOptions.port = verifyOptions.port || (app && app.get('port')) || 3000;
+    verifyOptions.restApiRoot = verifyOptions.restApiRoot || (app && app.get('restApiRoot')) || '/api';
 
     var displayPort = (
-      (options.protocol === 'http' && options.port == '80') ||
-      (options.protocol === 'https' && options.port == '443')
-    ) ? '' : ':' + options.port;
+      (verifyOptions.protocol === 'http' && verifyOptions.port == '80') ||
+      (verifyOptions.protocol === 'https' && verifyOptions.port == '443')
+    ) ? '' : ':' + verifyOptions.port;
 
     var urlPath = joinUrlPath(
-      options.restApiRoot,
+      verifyOptions.restApiRoot,
       userModel.http.path,
       userModel.sharedClass.findMethodByName('confirm').http.path
     );
 
-    options.verifyHref = options.verifyHref ||
-      options.protocol +
+    verifyOptions.verifyHref = verifyOptions.verifyHref ||
+      verifyOptions.protocol +
       '://' +
-      options.host +
+      verifyOptions.host +
       displayPort +
       urlPath +
       '?' + qs.stringify({
-        uid: '' + options.user[pkName],
-        redirect: options.redirect,
+        uid: '' + verifyOptions.user[pkName],
+        redirect: verifyOptions.redirect,
       });
 
-    options.templateFn = options.templateFn || createVerificationEmailBody;
+    verifyOptions.templateFn = verifyOptions.templateFn || createVerificationEmailBody;
 
     // Email model
     var Email =
-      options.mailer || this.constructor.email || registry.getModelByType(loopback.Email);
+      verifyOptions.mailer || this.constructor.email || registry.getModelByType(loopback.Email);
 
     // Set a default token generation function if one is not provided
-    var tokenGenerator = options.generateVerificationToken || User.generateVerificationToken;
+    var tokenGenerator = verifyOptions.generateVerificationToken || User.generateVerificationToken;
     assert(typeof tokenGenerator === 'function', 'generateVerificationToken must be a function');
 
     tokenGenerator(user, function(err, token) {
-      if (err) { return fn(err); }
+      if (err) { return cb(err); }
 
       user.verificationToken = token;
       user.save(function(err) {
         if (err) {
-          fn(err);
+          cb(err);
         } else {
           sendEmail(user);
         }
@@ -681,51 +706,51 @@ module.exports = function(User) {
 
     // TODO - support more verification types
     function sendEmail(user) {
-      options.verifyHref += '&token=' + user.verificationToken;
+      verifyOptions.verifyHref += '&token=' + user.verificationToken;
 
-      options.verificationToken = user.verificationToken;
+      verifyOptions.verificationToken = user.verificationToken;
 
-      options.text = options.text || g.f('Please verify your email by opening ' +
-        'this link in a web browser:\n\t%s', options.verifyHref);
+      verifyOptions.text = verifyOptions.text || g.f('Please verify your email by opening ' +
+        'this link in a web browser:\n\t%s', verifyOptions.verifyHref);
 
-      options.text = options.text.replace(/\{href\}/g, options.verifyHref);
+      verifyOptions.text = verifyOptions.text.replace(/\{href\}/g, verifyOptions.verifyHref);
 
-      options.to = options.to || user.email;
+      verifyOptions.to = verifyOptions.to || user.email;
 
-      options.subject = options.subject || g.f('Thanks for Registering');
+      verifyOptions.subject = verifyOptions.subject || g.f('Thanks for Registering');
 
-      options.headers = options.headers || {};
+      verifyOptions.headers = verifyOptions.headers || {};
 
-      options.templateFn(options, function(err, html) {
+      verifyOptions.templateFn(verifyOptions, function(err, html) {
         if (err) {
-          fn(err);
+          cb(err);
         } else {
           setHtmlContentAndSend(html);
         }
       });
 
       function setHtmlContentAndSend(html) {
-        options.html = html;
+        verifyOptions.html = html;
 
-        // Remove options.template to prevent rejection by certain
+        // Remove verifyOptions.template to prevent rejection by certain
         // nodemailer transport plugins.
-        delete options.template;
+        delete verifyOptions.template;
 
-        Email.send(options, function(err, email) {
+        Email.send(verifyOptions, function(err, email) {
           if (err) {
-            fn(err);
+            cb(err);
           } else {
-            fn(null, {email: email, token: user.verificationToken, uid: user[pkName]});
+            cb(null, {email: email, token: user.verificationToken, uid: user[pkName]});
           }
         });
       }
     }
-    return fn.promise;
+    return cb.promise;
   };
 
-  function createVerificationEmailBody(options, cb) {
-    var template = loopback.template(options.template);
-    var body = template(options);
+  function createVerificationEmailBody(verifyOptions, cb) {
+    var template = loopback.template(verifyOptions.template);
+    var body = template(verifyOptions);
     cb(null, body);
   }
 
@@ -1011,6 +1036,18 @@ module.exports = function(User) {
           {arg: 'options', type: 'object', http: 'optionsFromRequest'},
         ],
         http: {verb: 'post', path: '/verify'},
+      }
+    );
+
+    UserModel.remoteMethod(
+      'prototype.verify',
+      {
+        description: 'Trigger user\'s identity verification.',
+        accepts: [
+          {arg: 'verifyOptions', type: 'object', http: ctx => this.getVerifyOptions()},
+          {arg: 'options', type: 'object', http: 'optionsFromRequest'},
+        ],
+        http: {verb: 'post'},
       }
     );
 

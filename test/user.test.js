@@ -833,7 +833,7 @@ describe('User', function() {
       User.settings.emailVerificationRequired = false;
     });
 
-    it('require valid and complete credentials for email verification', function(done) {
+    it('requires valid and complete credentials for email verification', function(done) {
       User.login({email: validCredentialsEmail}, function(err, accessToken) {
         // strongloop/loopback#931
         // error message should be "login failed"
@@ -849,7 +849,7 @@ describe('User', function() {
       });
     });
 
-    it('require valid and complete credentials for email verification - promise variant',
+    it('requires valid and complete credentials for email verification - promise variant',
     function(done) {
       User.login({email: validCredentialsEmail})
         .then(function(accessToken) {
@@ -868,24 +868,35 @@ describe('User', function() {
 
     it('does not login a user with unverified email but provides userId', function(done) {
       User.login(validCredentials, function(err, accessToken) {
-        assert(err);
-        assert.equal(err.code, 'LOGIN_FAILED_EMAIL_NOT_VERIFIED');
-        assert.equal(err.userId, validCredentialsUser.pk);
+        err = Object.assign({}, err);
+        expect(err).to.eql({
+          statusCode: 401,
+          code: 'LOGIN_FAILED_EMAIL_NOT_VERIFIED',
+          details: {
+            userId: validCredentialsUser.pk,
+          },
+        });
         done();
       });
     });
 
-    it('does not login a user with unverified email - promise variant', function(done) {
-      User.login(validCredentials)
-        .then(function(err, accessToken) {
-          done();
-        })
-        .catch(function(err) {
-          assert(err);
-          assert.equal(err.code, 'LOGIN_FAILED_EMAIL_NOT_VERIFIED');
-          assert.equal(err.userId, validCredentialsUser.pk);
-          done();
-        });
+    it('does not login a user with unverified email but provides userId ' +
+      '- promise variant', function() {
+      return User.login(validCredentials).then(
+        function(user) {
+          throw new Error('User.login() should have failed');
+        },
+        function(err, accessToken) {
+          err = Object.assign({}, err);
+          expect(err).to.eql({
+            statusCode: 401,
+            code: 'LOGIN_FAILED_EMAIL_NOT_VERIFIED',
+            details: {
+              userId: validCredentialsUser.pk,
+            },
+          });
+        }
+      );
     });
 
     it('login a user with verified email', function(done) {
@@ -1407,13 +1418,24 @@ describe('User', function() {
     }
   });
 
-  describe('Verification', function() {
+  describe('Identity verification', function() {
     describe('User.getVerifyOptions()', function() {
-      it('returns default user identity verify options', function(done) {
+      it('returns default verify options', function(done) {
         const verifyOptions = User.getVerifyOptions();
         expect(verifyOptions).to.eql({
-          'type': 'email',
+          type: 'email',
+          from: 'noreply@example.com',
         });
+        done();
+      });
+
+      it('custom verify options can be defined via model.settings', function(done) {
+        User.settings.verifyOptions = {
+          type: 'email',
+          from: 'test@example.com',
+        };
+        const verifyOptions = User.getVerifyOptions();
+        expect(verifyOptions).to.eql(User.settings.verifyOptions);
         done();
       });
 
@@ -1421,13 +1443,14 @@ describe('User', function() {
         User.getVerifyOptions = function() {
           const base = User.base.getVerifyOptions();
           return Object.assign({}, base, {
-            from: 'noreply@email.com',
+            redirect: '/redirect',
           });
         };
         const verifyOptions = User.getVerifyOptions();
         expect(verifyOptions).to.eql({
           type: 'email',
-          from: 'noreply@email.com',
+          from: 'noreply@example.com',
+          redirect: '/redirect',
         });
         done();
       });
@@ -1947,60 +1970,12 @@ describe('User', function() {
             expect(token).to.exist();
           });
       });
-    });
 
-    describe('User.verify(id)', function() {
-      beforeEach(()=> {
-        User.getVerifyOptions = function() {
-          const base = User.base.getVerifyOptions();
-          return Object.assign({}, base, {
-            from: 'noreply@email.com',
-          });
-        };
-      });
-
-      it('triggers user identity verification', function() {
+      it('is called over REST method /User/:id/verify', function() {
         return User.create({email: 'bar@bat.com', password: 'bar'})
-        .then(user => {
-          return User.verify(user.pk);
-        })
-        .then(res => {
-          // No need to redo all the tests already done in the User.prototype.verify()
-          // prototype method: just doing a partial check to confirm that the
-          // prototype method was called successfully.
-          expect(res.email.envelope).to.eql({from: 'noreply@email.com', to: ['bar@bat.com']});
-        });
-      });
-
-      it('throws when providing an invalid user id', function() {
-        return User.create({email: 'bar@bat.com', password: 'bar'})
-        .then(user => {
-          return User.verify('invalidUserId');
-        })
-        .then(
-          function onSuccess() {
-            throw new Error('User.verify() should have failed');
-          },
-          function onError(err) {
-            err = Object.assign({}, err);
-            expect(err).to.eql({
-              code: 'USER_NOT_FOUND',
-              statusCode: 422,
-            });
-          }
-        );
-      });
-
-      it('is called over REST method /User/verify', function() {
-        return request(app)
-          .post('/test-users')
-          .send({email: 'bar@bat.com', password: 'bar'})
-          .expect('Content-Type', /json/)
-          .expect(200)
-          .then(res => {
+          .then(user => {
             return request(app)
-              .post('/test-users/verify')
-              .send({uid: res.body.pk})
+              .post('/test-users/' + user.pk + '/verify')
               .expect('Content-Type', /json/)
               // we already tested before that User.verify(id) works correctly
               // having the remote method returning 204 is enough to make sure
@@ -2009,12 +1984,73 @@ describe('User', function() {
           });
       });
 
-      it('fails over REST with invalid user id', function() {
+      it('fails over REST method /User/:id/verify with invalid user id', function() {
         return request(app)
-          .post('/test-users/verify')
-          .send({uid: 'invalidUserId'})
+          .post('/test-users/' + 'invalid-id' + '/verify')
           .expect('Content-Type', /json/)
-          .expect(422);
+          .expect(404);
+      });
+    });
+
+    describe('User.verify(id)', function() {
+      it('triggers user identity verification', function() {
+        const verifyOptions = User.getVerifyOptions();
+
+        return User.create({email: 'bar@bat.com', password: 'bar'})
+        .then(user => {
+          return User.verify(user.pk, verifyOptions);
+        })
+        .then(res => {
+          // No need to redo all the tests already done in the user.verify()
+          // prototype method: just doing a partial check to confirm that the
+          // prototype method was called successfully.
+          expect(res.email.envelope).to.eql({
+            from: 'noreply@example.com',
+            to: ['bar@bat.com'],
+          });
+        });
+      });
+
+      it('throws when providing an invalid user id', function() {
+        return User.create({email: 'bar@bat.com', password: 'bar'})
+          .then(user => {
+            return User.verify('invalidUserId');
+          })
+          .then(
+            function onSuccess() {
+              throw new Error('User.verify() should have failed');
+            },
+            function onError(err) {
+              err = Object.assign({}, err);
+              expect(err).to.eql({
+                code: 'USER_NOT_FOUND',
+                statusCode: 404,
+              });
+            }
+          );
+      });
+
+      it('forwards the "options" argument', function() {
+        const options = {testFlag: true};
+        const verifyOptions = User.getVerifyOptions();
+
+        // backup original user.verify() method
+        const originalMethod = User.prototype.verify;
+
+        // injecting mockup user.verify() method to ease option forwarding test
+        User.prototype.verify = function(verifyOptions, options, cb) {
+          expect(options).to.eql({testFlag: true});
+          cb();
+        };
+
+        return User.create({email: 'bar@bat.com', password: 'bar'})
+          .then(user => {
+            return User.verify(user.pk, verifyOptions, options);
+          })
+          .finally(()=>{
+            // restoring original user.verify() method;
+            User.prototype.verify = originalMethod;
+          });
       });
     });
 
