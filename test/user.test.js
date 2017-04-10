@@ -1402,13 +1402,13 @@ describe('User', function() {
           {hook: 'access', testFlag: true},
 
           // "before save" hook prepareForTokenInvalidation
-          {hook: 'access', testFlag: true},
+          {hook: 'access', setPassword: true, testFlag: true},
 
           // updateAttributes
-          {hook: 'before save', testFlag: true},
+          {hook: 'before save', setPassword: true, testFlag: true},
 
           // validate uniqueness of User.email
-          {hook: 'access', testFlag: true},
+          {hook: 'access', setPassword: true, testFlag: true},
         ]));
 
       function saveObservedOptionsForHook(name) {
@@ -1489,13 +1489,13 @@ describe('User', function() {
           {hook: 'access', testFlag: true},
 
           // "before save" hook prepareForTokenInvalidation
-          {hook: 'access', testFlag: true},
+          {hook: 'access', setPassword: true, testFlag: true},
 
           // updateAttributes
-          {hook: 'before save', testFlag: true},
+          {hook: 'before save', setPassword: true, testFlag: true},
 
           // validate uniqueness of User.email
-          {hook: 'access', testFlag: true},
+          {hook: 'access', setPassword: true, testFlag: true},
         ]));
 
       function saveObservedOptionsForHook(name) {

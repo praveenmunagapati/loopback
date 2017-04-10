@@ -105,6 +105,7 @@ module.exports = function(User) {
     ttl = Math.min(ttl || userModel.settings.ttl, userModel.settings.maxTTL);
     this.accessTokens.create({
       ttl: ttl,
+      scopes: options.scopes,
     }, cb);
     return cb.promise;
   };
@@ -495,6 +496,7 @@ module.exports = function(User) {
     }
 
     const delta = {password: newPassword};
+    options = Object.assign({setPassword: true}, options);
     this.patchAttributes(delta, options, (err, updated) => cb(err));
 
     return cb.promise;
@@ -806,7 +808,17 @@ module.exports = function(User) {
         return cb(err);
       }
 
-      user.createAccessToken(ttl, function(err, accessToken) {
+      if (UserModel.settings.legacyPasswordFlow === false) {
+        const params = {
+          ttl: ttl,
+          scopes: ['reset-password'],
+        };
+        user.createAccessToken(params, onTokenCreated);
+      } else {
+        user.createAccessToken(ttl, onTokenCreated);
+      }
+
+      function onTokenCreated(err, accessToken) {
         if (err) {
           return cb(err);
         }
@@ -817,7 +829,7 @@ module.exports = function(User) {
           user: user,
           options: options,
         });
-      });
+      }
     });
 
     return cb.promise;
@@ -1003,6 +1015,9 @@ module.exports = function(User) {
       }
     );
 
+    const setPasswordScopes = UserModel.settings.legacyPasswordFlow === false ?
+      ['reset-password'] : undefined;
+
     UserModel.remoteMethod(
       'setPassword',
       {
@@ -1014,6 +1029,7 @@ module.exports = function(User) {
           {arg: 'newPassword', type: 'string', required: true, http: {source: 'form'}},
           {arg: 'options', type: 'object', http: 'optionsFromRequest'},
         ],
+        accessScopes: setPasswordScopes,
         http: {verb: 'POST', path: '/reset-password'},
       }
     );
@@ -1077,6 +1093,47 @@ module.exports = function(User) {
       ctx.query.where.email = ctx.query.where.email.toLowerCase();
     }
     next();
+  });
+
+  User.observe('before save', function rejectInsecurePasswordChange(ctx, next) {
+    const UserModel = ctx.Model;
+    if (UserModel.settings.legacyPasswordFlow !== false) {
+      // In legacyPasswordFlow, any DAO method can change the password
+      return next();
+    }
+
+    if (ctx.isNewInstance) {
+      // The password can be always set when creating a new User instance
+      return next();
+    }
+    const isPasswordChange = 'password' in (ctx.data || ctx.instance);
+
+    if (ctx.options.setPassword) {
+      // This is the option used by `setPassword()` API
+      // to turn off this password-change check
+
+      // Verify that only the password is changed and nothing more or less.
+      const data = ctx.data || ctx.instance;
+      if (Object.keys(data).length > 1 || !isPasswordChange) {
+        // This is a programmer's error, use the default status code 500
+        return next(new Error(
+          'Invalid use of "options.setPassword". Only "password" can be ' +
+          'changed when using this option.'));
+      }
+
+      return next();
+    }
+
+    if (!isPasswordChange) {
+      return next();
+    }
+
+    const err = new Error(
+      'Changing user password via patch/replace API is not allowed. ' +
+      'Use changePassword() or setPassword() instead.');
+    err.statusCode = 401;
+    err.code = 'PASSWORD_CHANGE_NOT_ALLOWED';
+    next(err);
   });
 
   User.observe('before save', function prepareForTokenInvalidation(ctx, next) {
