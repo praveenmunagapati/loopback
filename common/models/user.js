@@ -430,7 +430,7 @@ module.exports = function(User) {
   /**
    * Set this user's password after a password-reset request was made.
    *
-   * @param {AccessToken} resetToken The token created by resetPassword().
+   * @param {*} userId Id of the user changing the password
    * @param {string} newPassword The new password to use.
    * @param {object} [options]
    * @callback {Function} callback
@@ -438,7 +438,7 @@ module.exports = function(User) {
    * @promise
    */
   User.setPassword = function(userId, newPassword, options, cb) {
-    assert(!!userId, 'resetToken is a required argument');
+    assert(userId != null && userId !== '', 'userId is a required argument');
     assert(!!newPassword, 'newPassword is a required argument');
 
     if (cb === undefined && typeof options === 'function') {
