@@ -495,8 +495,15 @@ module.exports = function(User) {
       return cb.promise;
     }
 
+    // We need to modify options passed to patchAttributes, but we don't want
+    // to modify the original options object passed to us by setPassword caller
+    options = Object.assign({}, options);
+
+    // patchAttributes() does not allow callers to modify the password property
+    // unless "options.setPassword" is set.
+    options.setPassword = true;
+
     const delta = {password: newPassword};
-    options = Object.assign({setPassword: true}, options);
     this.patchAttributes(delta, options, (err, updated) => cb(err));
 
     return cb.promise;
