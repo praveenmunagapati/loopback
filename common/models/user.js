@@ -79,12 +79,26 @@ module.exports = function(User) {
    * Create access token for the logged in user. This method can be overridden to
    * customize how access tokens are generated
    *
-   * @param {Number} ttl The requested ttl
-   * @param {Object} [options] The options for access token, such as scope, appId
+   * Supported flavours:
+   *
+   * ```js
+   * createAccessToken(ttl, cb)
+   * createAccessToken(ttl, options, cb);
+   * createAccessToken(options, cb);
+   * // recent addition:
+   * createAccessToken(data, options, cb);
+   * ```
+   *
+   * @options {Number|Object} [ttl|data] Either the requested ttl,
+   * or an object with token properties to set (see below).
+   * @property {Number} [ttl] The requested ttl
+   * @property {String[]} [scopes] The access scopes granted to the token.
+   * @param {Object} [properties] Additional options (e.g. the context).
    * @callback {Function} cb The callback function
    * @param {String|Error} err The error string or object
    * @param {AccessToken} token The generated access token object
    * @promise
+   *
    */
   User.prototype.createAccessToken = function(ttl, options, cb) {
     if (cb === undefined && typeof options === 'function') {
@@ -95,18 +109,21 @@ module.exports = function(User) {
 
     cb = cb || utils.createPromiseCallback();
 
-    if (typeof ttl === 'object' && !options) {
-      // createAccessToken(options, cb)
-      options = ttl;
-      ttl = options.ttl;
+    let tokenData;
+    if (typeof ttl !== 'object') {
+      // createAccessToken(ttl[, options], cb)
+      tokenData = {ttl};
+    } else if (options) {
+      // createAccessToken(data, options, cb)
+      tokenData = ttl;
+    } else {
+      // createAccessToken(options, cb);
+      tokenData = {};
     }
-    options = options || {};
-    var userModel = this.constructor;
-    ttl = Math.min(ttl || userModel.settings.ttl, userModel.settings.maxTTL);
-    this.accessTokens.create({
-      ttl: ttl,
-      scopes: options.scopes,
-    }, cb);
+
+    var userSettings = this.constructor.settings;
+    tokenData.ttl = Math.min(tokenData.ttl || userSettings.ttl, userSettings.maxTTL);
+    this.accessTokens.create(tokenData, options, cb);
     return cb.promise;
   };
 
@@ -816,12 +833,16 @@ module.exports = function(User) {
       }
 
       if (UserModel.settings.legacyPasswordFlow === false) {
-        const params = {
+        const tokenData = {
           ttl: ttl,
           scopes: ['reset-password'],
         };
-        user.createAccessToken(params, onTokenCreated);
+        user.createAccessToken(tokenData, options, onTokenCreated);
       } else {
+        // We need to preserve backwards-compatibility with
+        // user-supplied implementations of "createAccessToken"
+        // that may not support "options" argument (we have such
+        // examples in our test suite).
         user.createAccessToken(ttl, onTokenCreated);
       }
 
