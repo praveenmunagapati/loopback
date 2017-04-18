@@ -1134,14 +1134,13 @@ module.exports = function(User) {
       // The password can be always set when creating a new User instance
       return next();
     }
-    const isPasswordChange = 'password' in (ctx.data || ctx.instance);
+    const data = ctx.data || ctx.instance;
+    const isPasswordChange = 'password' in data;
 
+    // This is the option set by `setPassword()` API
+    // when calling `this.patchAttritubes()` to change user's password
     if (ctx.options.setPassword) {
-      // This is the option used by `setPassword()` API
-      // to turn off this password-change check
-
       // Verify that only the password is changed and nothing more or less.
-      const data = ctx.data || ctx.instance;
       if (Object.keys(data).length > 1 || !isPasswordChange) {
         // This is a programmer's error, use the default status code 500
         return next(new Error(
