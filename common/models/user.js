@@ -93,7 +93,7 @@ module.exports = function(User) {
    * or an object with token properties to set (see below).
    * @property {Number} [ttl] The requested ttl
    * @property {String[]} [scopes] The access scopes granted to the token.
-   * @param {Object} [properties] Additional options (e.g. the context).
+   * @param {Object} [options] Additional options including remoting context
    * @callback {Function} cb The callback function
    * @param {String|Error} err The error string or object
    * @param {AccessToken} token The generated access token object
@@ -449,7 +449,7 @@ module.exports = function(User) {
    *
    * @param {*} userId Id of the user changing the password
    * @param {string} newPassword The new password to use.
-   * @param {object} [options]
+   * @param {Object} [options] Additional options including remoting context
    * @callback {Function} callback
    * @param {Error} err Error object
    * @promise
@@ -491,7 +491,7 @@ module.exports = function(User) {
    * current password or a password-reset token.
    *
    * @param {string} newPassword The new password to use.
-   * @param {object} [options]
+   * @param {Object} [options] Additional options including remoting context
    * @callback {Function} callback
    * @param {Error} err Error object
    * @promise
